@@ -22,6 +22,25 @@ def clip(text, limit=MAX_CHARS):
     return text[:limit] + f"\n\n…（已截断，原文 {len(text)} 字符，只返回前 {limit} 字符）"
 
 
+def _cell(value):
+    """单元格取值：浮点去掉尾随噪声，日期转 ISO，整数不带 .0
+
+    Excel 里算出来的 13.290322580645162 直接 str() 会污染整张表，
+    模型读到这种数字也没法用，所以统一收敛到 4 位小数。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float):
+        if value.is_integer() and abs(value) < 1e15:
+            return str(int(value))
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    return str(value)
+
+
 def _error(message):
     """统一错误结构：isError 由 server 层转换成 MCP 的 isError"""
     return {"ok": False, "error": message}
@@ -151,7 +170,7 @@ def sheet_read(path, sheet=None, limit=MAX_CHARS, max_rows=MAX_TABLE_ROWS):
         if index >= max_rows:
             truncated_rows = True
             break
-        values = ["" if v is None else str(v) for v in row]
+        values = [_cell(v) for v in row]
         if not any(v.strip() for v in values):
             empty_streak += 1
             if empty_streak >= 5:      # 连续空行一般是格式残留，停

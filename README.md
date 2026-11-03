@@ -114,6 +114,86 @@ python examples/test_client.py
 2. **通知没有 `id`，不能回复**。`notifications/initialized` 回了就会让客户端困惑。
 3. **工具异常不能弄死服务器**。工具里任何异常都转成 `isError: true` 的响应，循环继续。
 
+## 接入 DeepSeek Harness（实测记录）
+
+我把这个服务接进 DSH 时踩了两个坑，都修好了，记录在这里省得别人再踩。
+
+### 抓到的真实协议流
+
+DSH 内置的 MCP 客户端比 2024-11-05 规范要新，握手时会先探测一个 `server/discover`：
+
+```
+IN  <<< {"method":"server/discover","params":{"_meta":{
+             "io.modelcontextprotocol/protocolVersion":"2026-07-28", ...}}}
+OUT >>> {"error":{"code":-32601,"message":"不支持的方法: server/discover"}}
+
+IN  <<< {"method":"initialize","params":{"protocolVersion":"2025-11-25", ...}}
+OUT >>> {"protocolVersion":"2024-11-05","capabilities":{"tools":{}}, ...}
+
+IN  <<< {"jsonrpc":"2.0","method":"notifications/initialized"}
+IN  <<< {"method":"tools/list","jsonrpc":"2.0","id":1}
+OUT >>> {"id":1,"result":{"tools":[{"name":"doc_read", ...}]}}
+```
+
+**好消息**：回 2024-11-05 它仍然接受，向下兼容。拒掉 `server/discover` 也不影响握手。
+
+### 坑一：Windows 上中文变乱码，还会崩
+
+接上后工具描述显示成 `��ȡ Word`。原因是 Python 连管道时默认用 **GBK**，而客户端按 UTF-8 解码。
+
+更麻烦的是会**直接崩**——文档里有 `✅` 这种 GBK 编不出来的字符：
+
+```
+'gbk' codec can't encode character '\u2705' in position 22
+```
+
+双保险修法（`server.py` 里的 `_force_utf8` + `_dumps`）：
+
+```python
+for stream in (sys.stdout, sys.stderr):
+    stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+
+# 万一 reconfigure 没生效，就退化成纯 ASCII 输出（中文变 \uXXXX 转义）
+ascii_only = (sys.stdout.encoding or "").lower().replace("-", "") != "utf8"
+json.dumps(payload, ensure_ascii=ascii_only)
+```
+
+JSON 客户端解析转义后会还原成正常中文，所以**任何控制台编码下都不会崩**。
+
+### 坑二：回复"通知"会被判违规
+
+JSON-RPC 规定没有 `id` 的消息是通知，**不能回复**。我早期对未知通知也回了一条 `id: null` 的错误，客户端直接判定协议违规断开。
+
+```python
+is_notification = "id" not in request
+...
+if is_notification:
+    return None
+```
+
+### 接入方式：配置型 bundle
+
+DSH 里不需要写插件代码，一个纯配置文件就能挂上（样例见 [`examples/dsh-bundle/`](examples/dsh-bundle/)）：
+
+```yaml
+- insert:
+    - id: office-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: office
+        transport: stdio
+        command: '<装了依赖的那个 python 绝对路径>'
+        args:
+          - '<server.py 的绝对路径>'
+        failOnStartupError: true
+```
+
+装好后工具名是 `mcp__office__doc_read` 这种格式。
+
+### 一个必须知道的运维细节
+
+**调试时如果手动杀掉 MCP 子进程，工具调用会一直报 `Connection closed`。** 这时客户端根本不会发 `tools/call`（抓包可见），靠开关插件重连也不够——得**完全退出并重启 DSH**。正常运行不会遇到，只有调试时才要注意。
+
 ## 实现细节
 
 ### Word 按原顺序输出

@@ -1,0 +1,17 @@
+# 配置型 bundle：不写插件代码，只声明"插一个已安装的 MCP 客户端进来"
+#
+# 用之前把两个路径改成你自己的：
+#   command = 装了 python-docx/openpyxl/python-pptx/pymupdf 的那个 python 的绝对路径
+#   args    = server.py 的绝对路径
+#
+# 装法（在 DSH 里）：plugin_manager install_bundle，target 指向本目录
+- insert:
+    - id: office-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: office
+        transport: stdio
+        command: 'C:/path/to/python.exe'
+        args:
+          - 'C:/path/to/office-mcp/server.py'
+        failOnStartupError: true

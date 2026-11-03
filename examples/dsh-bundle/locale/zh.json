@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Office 文档读取",
+    "description": "把本地 MCP 服务 office-mcp 接进来，让 agent 能读 Word、Excel、PPT、PDF。"
+  }
+}

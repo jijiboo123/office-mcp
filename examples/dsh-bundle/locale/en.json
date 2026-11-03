@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Office documents",
+    "description": "Connects the local office-mcp server so the agent can read Word, Excel, PowerPoint, and PDF files."
+  }
+}

@@ -22,8 +22,37 @@ import traceback
 
 import tools
 
+import os, tempfile
+# 设 OFFICE_MCP_DEBUG=1 才把收发原文写进 %TEMP%\office-mcp-debug.log
+DEBUG = os.environ.get("OFFICE_MCP_DEBUG") == "1"
+DEBUG_LOG = os.path.join(tempfile.gettempdir(), "office-mcp-debug.log")
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "office-mcp", "version": "1.0.0"}
+
+
+def _force_utf8():
+    """把 stdout/stderr 强制成 UTF-8。
+
+    Windows 上 Python 连管道时默认用 GBK 编码，JSON 里的中文会变成非 UTF-8 字节，
+    MCP 客户端按 UTF-8 解码就得到一堆乱码（工具描述会显示成 "��ȡ Word"）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+        except (AttributeError, ValueError):
+            pass
+
+
+def _dumps(payload):
+    """序列化成一行 JSON。
+
+    兜底策略：如果 stdout 不是 UTF-8（reconfigure 没生效），就输出纯 ASCII
+    （中文变成 \\uXXXX 转义）。JSON 客户端解析后会还原成正常中文，
+    但绝不会因为控制台编码不兼容而崩溃。
+    """
+    encoding = (getattr(sys.stdout, "encoding", "") or "").lower()
+    ascii_only = encoding.replace("-", "") != "utf8"
+    return json.dumps(payload, ensure_ascii=ascii_only)
 
 
 def _log(message):
@@ -44,6 +73,9 @@ def handle(request):
     method = request.get("method")
     msg_id = request.get("id")
     params = request.get("params") or {}
+    # JSON-RPC 规定：没有 id 的是通知，绝对不能回复。
+    # 回了客户端会判定协议违规，直接断开连接（这个坑让我调了半天）。
+    is_notification = "id" not in request
 
     if method == "initialize":
         return _result(msg_id, {
@@ -91,15 +123,24 @@ def handle(request):
         message = outcome.get("error") if isinstance(outcome, dict) else str(outcome)
         return _result(msg_id, {"content": [{"type": "text", "text": message}], "isError": True})
 
+    if is_notification:
+        return None
     return _error(msg_id, -32601, f"不支持的方法: {method}")
 
 def serve():
     """逐行读 stdin，逐行写 stdout。这是 MCP stdio 传输的全部"""
+    _force_utf8()
     _log(f"启动，协议版本 {PROTOCOL_VERSION}，可用工具 {len(tools.TOOLS)} 个")
     for raw in sys.stdin:
         line = raw.strip()
         if not line:
             continue
+        if DEBUG:
+            try:
+                with open(DEBUG_LOG, "a", encoding="utf-8") as dbg:
+                    dbg.write(f"IN <<< {line[:400]}\n")
+            except OSError:
+                pass
         try:
             request = json.loads(line)
         except json.JSONDecodeError as err:
@@ -112,12 +153,20 @@ def serve():
                 response = _error(request.get("id"), -32603, f"内部错误: {err}")
         if response is None:
             continue
-        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+        payload = _dumps(response)
+        if DEBUG:
+            try:
+                with open(DEBUG_LOG, "a", encoding="utf-8") as dbg:
+                    dbg.write(f"OUT >>> {payload[:200]}\n")
+            except OSError:
+                pass
+        sys.stdout.write(payload + "\n")
         sys.stdout.flush()
 
 
 def selftest():
     """自检：不依赖客户端，把工具列出来并跑一次真实调用"""
+    _force_utf8()
     print("工具清单:")
     for name, spec in tools.TOOLS.items():
         print(f"  {name:14} {spec['description'][:40]}…")
